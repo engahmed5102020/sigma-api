@@ -34,12 +34,18 @@ var jsonOptions = new JsonSerializerOptions
 async Task<IResult> PostSubstationSaveAsync(HttpRequest request, IConfiguration config, ILoggerFactory lf)
 {
     var cs = config.GetConnectionString("DefaultConnection");
-    var existsSql = config["SigmaQueries:SubstationSsFormat1ExistsSql"];
+    // نفس الاستعلام في appsettings؛ إن غاب المفتاح على السيرفر (نسخة قديمة من appsettings.json) لا يتعطل الحفظ.
+    var existsSql = config["SigmaQueries:SubstationSsFormat1ExistsSql"]?.Trim();
+    if (string.IsNullOrWhiteSpace(existsSql))
+    {
+        existsSql = "SELECT TOP (1) 1 FROM substation WHERE ss_format1 = @ss_format1";
+    }
+
     var log = lf.CreateLogger("Sigma.Api");
 
-    if (string.IsNullOrWhiteSpace(cs) || string.IsNullOrWhiteSpace(existsSql))
+    if (string.IsNullOrWhiteSpace(cs))
     {
-        return Results.Problem("ConnectionStrings:DefaultConnection أو SigmaQueries:SubstationSsFormat1ExistsSql غير مضبوط.");
+        return Results.Problem("ConnectionStrings:DefaultConnection غير مضبوط.");
     }
 
     using var bodyReader = new StreamReader(request.Body);
