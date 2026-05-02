@@ -12,7 +12,16 @@ builder.WebHost.ConfigureKestrel(o =>
     o.Limits.MaxRequestBodySize = 50L * 1024 * 1024;
 });
 
-builder.WebHost.UseUrls("http://0.0.0.0:5000");
+// Render يحقن PORT (مثلاً 10000). الاستماع على 5000 فقط يمنع وصول البروكسي → 404/502.
+var portEnv = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrWhiteSpace(portEnv) && int.TryParse(portEnv.Trim(), out var renderPort) && renderPort > 0)
+{
+    builder.WebHost.UseUrls($"http://0.0.0.0:{renderPort}");
+}
+else
+{
+    builder.WebHost.UseUrls("http://0.0.0.0:5000");
+}
 
 builder.Services.AddCors(options =>
 {
@@ -240,9 +249,10 @@ app.MapGet("/", (IConfiguration config) => Results.Json(new
 {
     service = "Sigma.Api",
     database = config["ConnectionStrings:DatabaseNameHint"] ?? "SigmaDB",
+    healthPaths = new[] { "/api/sigma/health", "/health" },
 }));
 
-app.MapGet("/api/sigma/health", async (IConfiguration config, ILoggerFactory logs) =>
+async Task<IResult> SigmaHealthAsync(IConfiguration config, ILoggerFactory logs)
 {
     var cs = config.GetConnectionString("DefaultConnection");
     if (string.IsNullOrWhiteSpace(cs))
@@ -264,7 +274,10 @@ app.MapGet("/api/sigma/health", async (IConfiguration config, ILoggerFactory log
         log.LogError(ex, "فشل الاتصال بقاعدة البيانات");
         return Results.Json(new { ok = false, error = ex.Message }, statusCode: 503);
     }
-});
+}
+
+app.MapGet("/api/sigma/health", SigmaHealthAsync);
+app.MapGet("/health", SigmaHealthAsync);
 
 app.MapGet("/api/sigma/maincontractors", async (IConfiguration config, ILoggerFactory lf) =>
 {

@@ -7,6 +7,6 @@ RUN dotnet publish "Sigma.Api.csproj" -c Release -o /app/publish /p:UseAppHost=f
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 WORKDIR /app
 COPY --from=build /app/publish .
-ENV ASPNETCORE_URLS=http://0.0.0.0:10000
-EXPOSE 10000
+# المنفذ الفعلي يأتي من Render عبر متغير PORT؛ Program.cs يقرأه.
+EXPOSE 8080
 ENTRYPOINT ["dotnet", "Sigma.Api.dll"]
