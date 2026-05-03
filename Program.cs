@@ -444,6 +444,35 @@ app.MapGet("/api/sigma/employees", async (IConfiguration config, ILoggerFactory 
     }
 });
 
+/// <summary>قائمة موظفين واجهة الويب فقط (`SigmaQueries:EmployeesWebListSql`).</summary>
+app.MapGet("/api/sigma/employees/web", async (IConfiguration config, ILoggerFactory lf) =>
+{
+    var cs = config.GetConnectionString("DefaultConnection");
+    var sql = config["SigmaQueries:EmployeesWebListSql"];
+    var log = lf.CreateLogger("Sigma.Api");
+
+    if (string.IsNullOrWhiteSpace(cs))
+    {
+        return Results.Problem("ConnectionStrings:DefaultConnection غير مضبوط.");
+    }
+
+    if (string.IsNullOrWhiteSpace(sql))
+    {
+        return Results.Problem("SigmaQueries:EmployeesWebListSql غير مضبوط.");
+    }
+
+    try
+    {
+        var rows = await ReadDynamicRowsAsync(cs, sql);
+        return Results.Json(rows, jsonOptions);
+    }
+    catch (Exception ex)
+    {
+        log.LogError(ex, "فشل جلب قائمة employee (ويب)");
+        return Results.Json(new { error = ex.Message }, jsonOptions, statusCode: 503);
+    }
+});
+
 app.MapGet("/api/sigma/typeworks", async (IConfiguration config, ILoggerFactory lf) =>
 {
     var cs = config.GetConnectionString("DefaultConnection");
@@ -778,6 +807,40 @@ app.MapGet("/api/sigma/employee/{code:int}", async (int code, IConfiguration con
     catch (Exception ex)
     {
         log.LogError(ex, "فشل جلب employee code={Code}", code);
+        return Results.Json(new { error = ex.Message }, jsonOptions, statusCode: 503);
+    }
+});
+
+/// <summary>صف موظف لواجهة الويب (`SigmaQueries:EmployeeByCodeWebSql`).</summary>
+app.MapGet("/api/sigma/employee/web/{code:int}", async (int code, IConfiguration config, ILoggerFactory lf) =>
+{
+    var cs = config.GetConnectionString("DefaultConnection");
+    var sql = config["SigmaQueries:EmployeeByCodeWebSql"];
+    var log = lf.CreateLogger("Sigma.Api");
+
+    if (code <= 0)
+    {
+        return Results.BadRequest(new { error = "code يجب أن يكون أكبر من صفر." });
+    }
+
+    if (string.IsNullOrWhiteSpace(cs))
+    {
+        return Results.Problem("ConnectionStrings:DefaultConnection غير مضبوط.");
+    }
+
+    if (string.IsNullOrWhiteSpace(sql))
+    {
+        return Results.Problem("SigmaQueries:EmployeeByCodeWebSql غير مضبوط.");
+    }
+
+    try
+    {
+        var row = await ReadSingleDynamicRowAsync(cs, sql, [new SqlParameter("@code", code)]);
+        return row is null ? Results.NotFound() : Results.Json(row, jsonOptions);
+    }
+    catch (Exception ex)
+    {
+        log.LogError(ex, "فشل جلب employee (ويب) code={Code}", code);
         return Results.Json(new { error = ex.Message }, jsonOptions, statusCode: 503);
     }
 });
