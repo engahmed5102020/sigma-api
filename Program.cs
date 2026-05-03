@@ -500,6 +500,158 @@ app.MapGet("/api/sigma/bands", async (IConfiguration config, ILoggerFactory lf) 
     }
 });
 
+/// <summary>محطات بدون مراجعة من `substation_view` حسب صلاحية الموظف (acceseprog1 + كود الموظف).</summary>
+app.MapGet("/api/sigma/substations/unreviewed", async (
+    HttpRequest request,
+    IConfiguration config,
+    ILoggerFactory lf) =>
+{
+    var cs = config.GetConnectionString("DefaultConnection");
+    var log = lf.CreateLogger("Sigma.Api");
+
+    if (string.IsNullOrWhiteSpace(cs))
+    {
+        return Results.Problem("ConnectionStrings:DefaultConnection غير مضبوط.");
+    }
+
+    var empStr = request.Query["employeeCode"].FirstOrDefault();
+    var progStr = request.Query["acceseprog1"].FirstOrDefault();
+    if (!int.TryParse(empStr, out var employeeCode) || employeeCode < 0)
+    {
+        return Results.BadRequest(new { error = "employeeCode مطلوب وعدد صحيح." });
+    }
+
+    if (!int.TryParse(progStr, out var acceseprog1) || acceseprog1 < 0 || acceseprog1 > 1)
+    {
+        return Results.BadRequest(new { error = "acceseprog1 مطلوب (0 أو 1)." });
+    }
+
+    string sql;
+    List<SqlParameter> prms = [];
+
+    if (acceseprog1 == 0 && employeeCode == 1)
+    {
+        sql = "SELECT * FROM substation_view WHERE [state] = 1 AND [code] > 0 AND ss_reviewed1 = 0";
+    }
+    else if (acceseprog1 == 0)
+    {
+        sql =
+            "SELECT * FROM substation_view WHERE [state] = 1 AND [code] > 0 AND ss_reviewed1 = 0 AND s_code = @emp";
+        prms.Add(new SqlParameter("@emp", SqlDbType.Int) { Value = employeeCode });
+    }
+    else
+    {
+        sql =
+            "SELECT * FROM substation_view WHERE [state] = 1 AND [code] > 0 AND ss_reviewed1 = 0 AND l_code = @emp";
+        prms.Add(new SqlParameter("@emp", SqlDbType.Int) { Value = employeeCode });
+    }
+
+    try
+    {
+        var rows = await ReadDynamicRowsAsync(cs, sql, prms);
+        return Results.Json(rows, jsonOptions);
+    }
+    catch (Exception ex)
+    {
+        log.LogError(ex, "فشل جلب substation_view unreviewed emp={Emp} prog1={P1}", employeeCode, acceseprog1);
+        return Results.Json(new { error = ex.Message }, jsonOptions, statusCode: 503);
+    }
+});
+
+/// <summary>صف رأس من `substation_view` + بنود من `substationdet` مع اسم البند من `band`.</summary>
+app.MapGet("/api/sigma/substation/{code:int}/detail", async (
+    int code,
+    IConfiguration config,
+    ILoggerFactory lf) =>
+{
+    var cs = config.GetConnectionString("DefaultConnection");
+    var log = lf.CreateLogger("Sigma.Api");
+
+    if (string.IsNullOrWhiteSpace(cs))
+    {
+        return Results.Problem("ConnectionStrings:DefaultConnection غير مضبوط.");
+    }
+
+    if (code <= 0)
+    {
+        return Results.BadRequest(new { error = "code غير صالح." });
+    }
+
+    const string headerSql = "SELECT TOP (1) * FROM substation_view WHERE [code] = @code";
+    const string detSql =
+        """
+        SELECT d.b_code AS b_code, d.qty AS qty, ISNULL(b.name_sh_ar, N'') AS band_name_ar
+        FROM dbo.substationdet d
+        LEFT JOIN dbo.band b ON b.code = d.b_code
+        WHERE d.[code] = @code
+        ORDER BY d.b_code
+        """;
+
+    try
+    {
+        var headers = await ReadDynamicRowsAsync(
+            cs,
+            headerSql,
+            [new SqlParameter("@code", SqlDbType.Int) { Value = code }]);
+        var details = await ReadDynamicRowsAsync(
+            cs,
+            detSql,
+            [new SqlParameter("@code", SqlDbType.Int) { Value = code }]);
+        object? headerObj = headers.Count > 0 ? headers[0] : null;
+        return Results.Json(new { header = headerObj, details }, jsonOptions);
+    }
+    catch (Exception ex)
+    {
+        log.LogError(ex, "فشل جلب تفاصيل المحطة code={Code}", code);
+        return Results.Json(new { error = ex.Message }, jsonOptions, statusCode: 503);
+    }
+});
+
+app.MapGet("/api/sigma/substation/{code:int}/images", async (
+    int code,
+    bool before,
+    int? maxCount,
+    IConfiguration config,
+    IHttpClientFactory httpFactory,
+    ILoggerFactory lf,
+    CancellationToken cancellationToken) =>
+{
+    var log = lf.CreateLogger("Sigma.Api");
+
+    if (code <= 0)
+    {
+        return Results.BadRequest(new { error = "code غير صالح." });
+    }
+
+    var max = maxCount is >= 1 and <= 9 ? maxCount!.Value : 9;
+
+    try
+    {
+        using var http = httpFactory.CreateClient();
+        http.Timeout = TimeSpan.FromMinutes(2);
+        var (ok, urls, message) = await DropboxStorage.ListStationImageTemporaryLinksAsync(
+            config,
+            http,
+            code,
+            before,
+            max,
+            cancellationToken);
+
+        if (!ok)
+        {
+            log.LogWarning("Dropbox list images: {Message}", message);
+            return Results.Json(new { ok = false, error = message, urls = Array.Empty<string>(), count = 0 }, jsonOptions, statusCode: 502);
+        }
+
+        return Results.Json(new { ok = true, urls, count = urls.Count }, jsonOptions);
+    }
+    catch (Exception ex)
+    {
+        log.LogError(ex, "فشل قائمة صور المحطة code={Code}", code);
+        return Results.Json(new { ok = false, error = ex.Message }, jsonOptions, statusCode: 503);
+    }
+});
+
 app.MapGet("/api/sigma/substation/next-code", async (IConfiguration config, ILoggerFactory lf) =>
 {
     var cs = config.GetConnectionString("DefaultConnection");

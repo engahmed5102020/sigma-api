@@ -151,4 +151,128 @@ internal static class DropboxStorage
 
         return sb.ToString();
     }
+
+    /// <summary>قائمة روابط مؤقتة لصور محطة في مجلد Befor أو After (Dropbox).</summary>
+    public static async Task<(bool Ok, List<string> Urls, string Message)> ListStationImageTemporaryLinksAsync(
+        IConfiguration config,
+        HttpClient http,
+        int stationCode,
+        bool isBefore,
+        int maxCount,
+        CancellationToken cancellationToken = default)
+    {
+        var appKey = config["Dropbox:AppKey"]?.Trim() ?? "";
+        var appSecret = config["Dropbox:AppSecret"]?.Trim() ?? "";
+        var refreshToken = config["Dropbox:RefreshToken"]?.Trim() ?? "";
+        if (string.IsNullOrEmpty(appKey) ||
+            string.IsNullOrEmpty(appSecret) ||
+            string.IsNullOrEmpty(refreshToken))
+        {
+            return (false, [], "Dropbox غير مضبوط في الخادم.");
+        }
+
+        if (stationCode <= 0)
+        {
+            return (false, [], "كود المحطة غير صالح.");
+        }
+
+        maxCount = Math.Clamp(maxCount, 1, 99);
+
+        var accessToken = await GetAccessTokenAsync(config, http, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return (false, [], "تعذر الحصول على رمز Dropbox.");
+        }
+
+        var root = (config["Dropbox:RootNamespacePath"] ?? config["Dropbox:RootPath"] ?? "/SigmaUploads").Trim();
+        var folder = isBefore ? "Befor" : "After";
+        var folderPath = $"{root.TrimEnd('/')}/{stationCode}/{folder}";
+
+        using var listReq = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://api.dropboxapi.com/2/files/list_folder");
+        listReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        var listJson = JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["path"] = folderPath,
+                ["recursive"] = false,
+                ["include_media_info"] = false,
+            });
+        listReq.Content = new StringContent(listJson, Encoding.UTF8, "application/json");
+
+        using var listResp = await http.SendAsync(listReq, cancellationToken).ConfigureAwait(false);
+        var listBody = await listResp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!listResp.IsSuccessStatusCode)
+        {
+            // مجلد غير موجود أو فارغ — نعيد قائمة فارغة دون خطأ للواجهة.
+            return (true, [], string.Empty);
+        }
+
+        using var listDoc = JsonDocument.Parse(listBody);
+        if (!listDoc.RootElement.TryGetProperty("entries", out var entries))
+        {
+            return (true, [], string.Empty);
+        }
+
+        var filePaths = new List<string>();
+        foreach (var e in entries.EnumerateArray())
+        {
+            if (!e.TryGetProperty(".tag", out var tag) || tag.GetString() != "file")
+            {
+                continue;
+            }
+
+            if (!e.TryGetProperty("path_display", out var pEl))
+            {
+                continue;
+            }
+
+            var p = pEl.GetString();
+            if (string.IsNullOrEmpty(p))
+            {
+                continue;
+            }
+
+            var lower = p.ToLowerInvariant();
+            if (lower.EndsWith(".jpg", StringComparison.Ordinal) ||
+                lower.EndsWith(".jpeg", StringComparison.Ordinal) ||
+                lower.EndsWith(".png", StringComparison.Ordinal) ||
+                lower.EndsWith(".webp", StringComparison.Ordinal))
+            {
+                filePaths.Add(p);
+            }
+        }
+
+        filePaths.Sort(StringComparer.OrdinalIgnoreCase);
+
+        var urls = new List<string>();
+        foreach (var path in filePaths.Take(maxCount))
+        {
+            using var linkReq = new HttpRequestMessage(
+                HttpMethod.Post,
+                "https://api.dropboxapi.com/2/files/get_temporary_link");
+            linkReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            var linkJson = JsonSerializer.Serialize(new Dictionary<string, string?> { ["path"] = path });
+            linkReq.Content = new StringContent(linkJson, Encoding.UTF8, "application/json");
+            using var linkResp = await http.SendAsync(linkReq, cancellationToken).ConfigureAwait(false);
+            var linkBody = await linkResp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!linkResp.IsSuccessStatusCode)
+            {
+                continue;
+            }
+
+            using var linkDoc = JsonDocument.Parse(linkBody);
+            if (linkDoc.RootElement.TryGetProperty("link", out var linkEl))
+            {
+                var url = linkEl.GetString();
+                if (!string.IsNullOrEmpty(url))
+                {
+                    urls.Add(url);
+                }
+            }
+        }
+
+        return (true, urls, string.Empty);
+    }
 }
